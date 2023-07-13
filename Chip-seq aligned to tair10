@@ -1,0 +1,88 @@
+The script that was used to analyse PE ChiP-seq data coming from The NovaSeq 6000, used for ldl1, fld4, Col-0
+Take all fastq.gz files from folders 
+
+# make fastq_file folder
+
+namelist=( Karina_4-ChIP-L2_L002-ds.0b6b29bdd9884d989c9bcc2b8bc70575 \
+Karina_21-ChIP-L2_L002-ds.69898a3d93b2495ea82ce5277b568023 \
+Karina_16-ChIP-L2_L002-ds.f1c043c3139b4e74a88061ef70c2f72c \
+Karina_10-ChIP-L2_L002-ds.0621af781c2c46728999cc80198fa837 \
+Karina_21-ChIP-L2_L002-ds.69898a3d93b2495ea82ce5277b568023 )
+for ((i=0;i<${#namelist[@]};++i)); do
+cd /binf-isilon/sandelin/people/karina/ChiP-seq/Chip1/${namelist[i]}/
+mv *.fastq.gz ../fastq_file/
+done
+
+# Combine L1 and L2 for R1
+for f1 in *-L1_L001_R1_001.fastq.gz; do
+  f2=${f1/-L1_L001_R1_001.f/-L2_L002_R1_001.f}
+  out=${f1/-L1_L001_R1_001.f/_R1.f}
+  echo $f1 $f2 $out
+  cat $f1 $f2 > $out
+done
+
+# Combine L1 and L2 for R2
+for f1 in *-L1_L001_R2_001.fastq.gz; do
+  f2=${f1/-L1_L001_R2_001.f/-L2_L002_R2_001.f}
+  out=${f1/-L1_L001_R2_001.f/_R2.f}
+  echo $f1 $f2 $out
+  cat $f1 $f2 > $out
+done
+
+# Count input read pairs:
+for file in *_R1.fastq.gz; do 
+  echo $file $(( $(zcat $file | wc -l | \
+    awk '{print $1}') / 4 )); 
+done
+
+# Align to the tair10 
+for f1 in *_R1.fastq.gz; do 
+  f2=${f1/_R1.f/_R2.f} && 
+  echo $f1 $f2 && 
+  STAR --genomeDir /binf-isilon/sandelin/people/karina/index --readFilesIn $f1 $f2 \
+    --runThreadN 16 --outFileNamePrefix ${f1/R1.fastq.gz/} \
+    --outSAMmultNmax 1 --alignEndsType Local \
+    --readFilesCommand zcat \
+    --clip3pAdapterSeq AGATCGGAAGAGC AGATCGGAAGAGC \
+    --clip3pAdapterMMp 0.1 0.1 \
+    --outSAMtype BAM Unsorted; 
+done
+
+rm *out *tab; rmdir *STARtmp
+for file in *Aligned*; do mv $file ${file/_Aligned.out/}; done
+
+# Sort BAM files, remove split alignments, MAPQ values below 5 and singletons:
+for file in *bam; do 
+  echo $file && 
+  samtools view -hu -q 5 -f 2 $file | 
+  samtools sort - -o ${file/.bam/_sorted.bam}; 
+
+# Sort for the fixmate
+samtools sort -n input.bam > output.bam
+
+# Run fixmate (required by markdup):
+for file in *sorted.bam; do echo $file && samtools fixmate -m $file ${file/.bam/_fixmate.bam}; done
+
+# Sort by coordinates:
+for file in *fixmate.bam; do echo $file && samtools sort $file -o ${file/.bam/_sorted.bam}; done
+
+# Deduplicate in PE mode:
+for file in *fixmate_sorted.bam; do echo $file && samtools markdup -r $file ${file/.bam/_dedup.bam}; done
+
+# Count the filtered read pairs:
+for file in *dedup.bam; do 
+  echo $file $(samtools flagstat $file | sed -n '7p' | \
+    awk '{print $1}'); 
+done
+
+# Merge replicates
+samtools merge col_merged.dedup.bam col*H3K4me3*dedup.bam
+
+INDEX for bamCoverage 
+for i in *merged.dedup.bam
+do
+	samtools index ${i}
+done
+
+# Coverage and Normalization
+for file in *dedup.bam; do echo $file && bamCoverage -b $file --binSize 10 --normalizeUsing BPM --effectiveGenomeSize 120000000 --extendReads 75 --outFileFormat bedgraph -o ${file/_dedup.bam/_cov.bedgraph}; done
