@@ -1,0 +1,116 @@
+The script that was used to analyse PE ChiP-seq data coming from The NovaSeq 6000, used for qua1-1, was, fld4/qua1-1, haf2/qua1-1, ssrp1/qua1-1, files were aligned to 20kb region around QUA1 gene
+
+logfile=/binf-isilon/sandelin/people/karina/logfile.txt
+# Make a reference genome
+bowtie-build /binf-isilon/sandelin/people/karina/20kb_correct.fa /binf-isilon/sandelin/people/karina/20kb_correct
+
+reference=/binf-isilon/sandelin/people/karina/20kb_correct
+# Assign files
+files=`find /binf-isilon/sandelin/people/karina/ChiP-seq/Chip3/chip3_together/Test/ -type f -name "*R1.fastq" | sort`
+
+# Unzip for Bowtie
+ gzip -d *.fastq.gz
+
+# Align to 20kb region including tDNA around QUA1
+for f in *R1.fastq; do
+		f2=/binf-isilon/sandelin/people/karina/ChiP-seq/Chip3/chip3_together/Try0mm/`basename ${f/R1.fastq/R2.fastq}`
+		echo "+++Processing $f and $f2"
+		outfile=/binf-isilon/sandelin/people/karina/ChiP-seq/Chip3/chip3_together/Try0mm/`basename ${f/R1.fastq/_3mm.sam}`
+		echo $outfile
+		echo "+++ Aligning file $f and writing results to $outfile" >> $logfile
+		bowtie -q -v 0 -k 3 --best -m 100 -p 30 $reference -1 $f -2 $f2 -S $outfile 2>> $logfile
+done
+
+files=`find /binf-isilon/sandelin/people/karina/ChiP-seq/Chip3/chip3_together/fastq.gz/ -type f -name "*.sam" | sort`
+
+# Sort BAM files, remove split alignments, MAPQ values below 10 and singletons:
+for file in *sam; do
+	sortedbam=/binf-isilon/sandelin/people/karina/ChiP-seq/Chip3/chip3_together/fastq.gz/`basename ${file/.sam/_mapq10_sorted.bam}`
+	echo "+++Processing $file writting to $sortedbam"
+	samtools view -S -b -hu -q 10 -f 2 $file | samtools sort - -o $sortedbam
+done
+
+# Sort names for fixmate
+samtools sort -n ws-input_sorted.bam > ws-input_sortednames.bam
+for file in *sorted.bam; do 
+  echo $file && 
+  samtools sort $file -n -o ${file/.bam/_names.bam}; 
+done
+
+# Run fixmate (required by markdup):
+for file in *names.bam; do echo $file && samtools fixmate -m $file ${file/.bam/_fixmate.bam}; done
+
+# Sort by coordinates:
+for file in *fixmate.bam; do echo $file && samtools sort $file -o ${file/.bam/_sorted.bam}; done
+
+# Deduplicate in PE mode:
+for file in *fixmate_sorted.bam; do echo $file && samtools markdup -r $file ${file/.bam/_dedup.bam}; done
+
+# I removed the reads aligning to BASTA gene in WS repeats
+samtools view -h ws-1-H3K36me2__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:1-6000' > ws-1-H3K36me2_1.sam
+samtools view -h ws-1-H3K36me2__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:12250-20070' > ws-1-H3K36me2_2.sam
+samtools merge ws-1-H3K36me2.sam  ws-1-H3K36me2_1.sam ws-1-H3K36me2_2.sam
+samtools view -b ws-1-H3K36me2.sam > ws-1-H3K36me2.bam
+
+samtools view -h ws-1-H3K36me3__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:1-6000' > ws-1-H3K36me3_1.sam
+samtools view -h ws-1-H3K36me3__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:12250-20070' > ws-1-H3K36me3_2.sam
+samtools merge ws-1-H3K36me3.sam  ws-1-H3K36me3_1.sam ws-1-H3K36me3_2.sam
+
+samtools view -h ws-2-H3K36me3__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:1-6000' > ws-2-H3K36me3_1.sam
+samtools view -h ws-2-H3K36me3__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:12250-20070' > ws-2-H3K36me3_2.sam
+samtools merge ws-2-H3K36me3.sam  ws-2-H3K36me3_1.sam ws-2-H3K36me3_2.sam
+
+samtools view -h ws-2-H3K36me2__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:1-6000' > ws-2-H3K36me2_1.sam
+samtools view -h ws-2-H3K36me2_3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:12250-20070' > ws-2-H3K36me2_2.sam
+samtools merge ws-2-H3K36me2.sam  ws-2-H3K36me2_1.sam ws-2-H3K36me2_2.sam
+
+samtools view -h ws2-input*__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:1-6000' > ws-2-input_1.sam
+samtools view -h ws2-input*__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:12250-20070' > ws-2-input_2.sam
+samtools merge ws-2-input.sam  ws-2-input_1.sam ws-2-input_2.sam
+
+samtools view -h ws1-input*__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:1-6000' > ws-1-input_1.sam
+samtools view -h ws1-input*__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:12250-20070' > ws-1-input_2.sam
+samtools merge ws-1-input.sam  ws-1-input_1.sam ws-1-input_2.sam
+
+samtools view -h ws-1-H3K4me3__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:1-6000' > ws-1-H3K4me3_1.sam
+samtools view -h ws-1-H3K4me3__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:12250-20070' > ws-1-H3K4me3_2.sam
+samtools merge ws-1-H3K4me3.sam  ws-1-H3K4me3_1.sam ws-1-H3K4me3_2.sam
+
+samtools view -h ws-1-H3K4me2__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:1-6000' > ws-1-H3K4me2_1.sam
+samtools view -h ws-1-H3K4me2__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:12250-20070' > ws-1-H3K4me2_2.sam
+samtools merge ws-1-H3K4me2.sam  ws-1-H3K4me2_1.sam ws-1-H3K4me2_2.sam
+
+samtools view -h ws-1-H3K4me1__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:1-6000' > ws-1-H3K4me1_1.sam
+samtools view -h ws-1-H3K4me1__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:12250-20070' > ws-1-H3K4me1_2.sam
+samtools merge ws-1-H3K4me1.sam  ws-1-H3K4me1_1.sam ws-1-H3K4me1_2.sam
+
+
+samtools view -h ws-2-H3K4me3__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:1-6000' > ws-2-H3K4me3_1.sam
+samtools view -h ws-2-H3K4me3__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:12250-20070' > ws-2-H3K4me3_2.sam
+samtools merge ws-2-H3K4me3.sam  ws-2-H3K4me3_1.sam ws-2-H3K4me3_2.sam
+
+samtools view -h ws-2-H3K4me2__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:1-6000' > ws-2-H3K4me2_1.sam
+samtools view -h ws-2-H3K4me2__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:12250-20070' > ws-2-H3K4me2_2.sam
+samtools merge ws-2-H3K4me2.sam  ws-2-H3K4me2_1.sam ws-2-H3K4me2_2.sam
+
+samtools view -h ws-2-H3K4me1__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:1-6000' > ws-2-H3K4me1_1.sam
+samtools view -h ws-2-H3K4me1__3mm_mapq10_sorted_names_fixmate_sorted_dedup.bam '20kb_correct:12250-20070' > ws-2-H3K4me1_2.sam
+samtools merge ws-2-H3K4me1.sam  ws-2-H3K4me1_1.sam ws-2-H3K4me1_2.sam
+
+# Count the filtered read pairs:
+for file in *.bam; do 
+  echo $file $(samtools flagstat $file | sed -n '7p' | \
+    awk '{print $1}'); 
+done
+
+INDEX for bamCoverage 
+for i in *dedup.bam
+do
+	samtools index ${i}
+done
+
+# Merge replicates:
+samtools merge ws_H3K36me2.bam  ws-*H3K36me2.bam
+
+# Coverage and Normalization
+for file in *dedup.bam; do echo $file && bamCoverage -b $file --binSize 10 --normalizeUsing BPM --effectiveGenomeSize 20000 --outFileFormat bedgraph -o ${file/_dedup.bam/_cov.bedgraph}; done
