@@ -1,0 +1,96 @@
+# Count raw reads:
+for file in *fastq.gz; do 
+  echo $file $(( $(zcat $file | wc -l | 
+    awk '{print $1}') / 4 )); 
+done
+
+# Trim adaptors
+for file in *fastq.gz; do echo $file && trim_galore --illumina $file; done
+
+# Count trimmed reads:
+for file in *trimmed.fq.gz; do 
+  echo $file $(( $(zcat $file | wc -l | 
+    awk '{print $1}') / 4 )); 
+done
+
+# Trim UMIs (first 8 nt of each read), append them to Fastq, step required for UMI-Tools dedup:
+for file in *trimmed.fq.gz; do echo $file && umi_tools extract --stdin=${file} --bc-pattern=NNNNNNNN --stdout=${file/.fq.gz/_UMI.fq.gz}; done
+
+# Align to 20kb region around QUA1 using BowTie:
+logfile=/binf-isilon/sandelin/people/karina/logfile.txt
+
+reference=/binf-isilon/sandelin/people/karina/20kb_correct
+
+files=`find /binf-isilon/sandelin/people/karina/qua1-1TSS/ -type f -name "*trimmed_UMI.fq.gz" | sort`
+
+for f in *UMI.fq.gz; do
+		echo "+++Processing $f"
+		outfile=/binf-isilon/sandelin/people/karina/qua1-1TSS/`basename ${f/.fq.gz/_3mm.sam}`
+		echo $outfile
+		echo "+++ Aligning file $f and writing results to $outfile" >> $logfile
+		bowtie -q -v 3 -k 1 --best -m 100 -p 30 $reference $f -S $outfile 2>> $logfile
+done
+
+# Sort BAM files, remove split alignments, MAPQ values below 10 and singletons:
+for file in *sam; do
+	sortedbam=/binf-isilon/sandelin/people/karina/qua1-1TSS/`basename ${file/.sam/_mapq10_sorted.bam}`
+	echo "+++Processing $file writting to $sortedbam"
+	samtools view -S -b -hu -q 10 $file | samtools sort - -o $sortedbam
+done
+
+# Count aligned reads:
+for file in *bam; do 
+  echo $file $(samtools flagstat $file | sed -n '1p' \
+    | awk '{print $1}'); 
+done
+
+#index uniq bam files
+for file in *_mapq10_sorted.bam; do echo $file && samtools index $file; done
+
+# Deduplicate on UMI:
+for file in *mapq10_sorted.bam; do
+  echo $file &&
+  umi_tools dedup --stdin=${file} --stdout=${file/.bam/_dedup.bam};
+done
+
+# Count deduplicated reads:
+for file in *dedup.bam; do 
+  echo $file $(samtools flagstat $file | sed -n '1p' | \
+    awk '{print $1}'); 
+done
+
+# Make stranded Bedgraph files (only the first base of each read is considered):
+for str in "+" "-"; do
+  echo $str
+  [ "$str" = "+" ] && n="fw" || n="rev"
+  for file in *_dedup.bam; do
+    echo $file && bedtools genomecov -ibam $file -bg -5 -strand $str | sort -k 1,1 -k 2,2n > ${file/.bam/}_${n}.bg
+  done
+done
+
+#compress the bedgraph files
+for file in *.bg; do gzip $file; done
+
+# Merge forward and reverse Bedgraph files for the same sample:
+for f1 in *fw.bg; do 
+  f2=${f1/fw/rev} && 
+  outf=${f1/fw.bg/fw_rev.bedgraph.gz} && 
+  echo $f1 "+" $f2 "=" $outf && 
+  awk 'BEGIN{OFS="\t"}{print $1,$2,$3,"-"$4}' $f2 | 
+  cat $f1 - | sort -k1,1 -k2,2n | 
+  sed '1i track type=bedGraph color=0,100,200 altColor=200,100,0' | gzip > $outf; 
+done
+
+# Normalize to 1M tags:
+for file in *bedgraph.gz; do 
+  norm=$( zcat $file | sed '/^[#t]/d' | \
+    awk 'BEGIN{SUM=0}{SUM+=sqrt($4^2)*($3-$2)}\
+      END{print SUM / 1000000}' ) && 
+  echo $file $norm && zcat $file | 
+  awk -v norm=$norm 'BEGIN{OFS="\t"}{if ($0~/^[#t]/) print $0; \
+    else print $1, $2, $3, $4 / norm}' | 
+  gzip > ${file/.bedgraph.gz/_norm1M.bedgraph.gz}; 
+done
+
+Change names of chromosomes
+for file in *bg.gz; do echo $file && zcat $file | sed 's/^Chr//;s/^C/Pt/;s/^M/Mt/' > temp && mv temp $file; done
