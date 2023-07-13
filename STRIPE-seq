@@ -1,0 +1,121 @@
+# This script was used for all STRIPE-seq lines to align them to tair10, trim the adaptors, filter low quality, deduplicate reads. 
+# R1 reads are expected to begin with 8nt UMI followed by TATAGGG 
+
+#To extract all sub-folders to the current folder 
+find . -mindepth 2 -type f -print -exec mv {} . \;
+
+# Merge FASTQ files sequenced on different lanes: you need to have a file merge_lanes_fastq.py in the folder and run
+python2.7 merge_lanes_fastq.py *.gz --run
+
+# Count raw reads:
+for file in *fastq.gz; do 
+  echo $file $(( $(zcat $file | wc -l | 
+    awk '{print $1}') / 4 )); 
+done
+
+# Process UMI:
+for file in *fastq.gz; do 
+  echo $file &&
+  umi_tools extract --stdin=$file --bc-pattern=NNNNNNNN --stdout=../03-umi/${file/fastq.gz/UMI.fq.gz};
+done
+
+# Run FastQC:
+for file in *fastq.gz; do fastqc $file; done
+
+# Trim TATAGGG from 5' end and Illumina adapters from 3' end:
+basedir=/isdata/sandelin/people/karina
+for file in *UMI.fq.gz; do 
+  echo $file &&
+  ${basedir}/Tools/miniconda3]/bin/trim_galore --illumina --clip_R1 7 --length 15 --gzip --no_report_file $file; 
+done
+
+# Count trimmed reads:
+for file in *trimmed.fq.gz; do 
+  echo $file $(( $(zcat $file | wc -l | 
+    awk '{print $1}') / 4 )); 
+done
+
+# Align to genome using STAR:
+for file in *UMI_trimmed.fq.gz; do echo $file &&  STAR --runThreadN 30 --outSAMmultNmax 1 --genomeDir /binf-isilon/sandelin/people/karina/index --readFilesIn $file  --alignEndsType Extend5pOfRead1 --readFilesCommand zcat --outSAMtype BAM Unsorted --sjdbGTFtagExonParentTranscript Parent --outSAMstrandField intronMotif --outFileNamePrefix ${file/trimmed.fq.gz/_}; done
+
+for file in *Aligned*; do mv $file ${file/_Aligned.out/}; done
+rm -r *STARgenome *STARtmp *out *tab
+
+# Count aligned reads:
+for file in *bam; do 
+  echo $file $(samtools flagstat $file | sed -n '1p' \
+    | awk '{print $1}'); 
+done
+
+# Sort BAM files and remove low MAPQ reads:with low mapping quality
+for file in *_.bam; do 
+  echo $file && 
+  samtools view -hu -q 5 $file | 
+  samtools sort - -o ${file/.bam/mapq5.bam}; 
+done
+
+# Count filtered reads:
+for file in *mapq5.bam; do 
+  echo $file $(samtools flagstat $file | sed -n '1p' | \
+    awk '{print $1}'); 
+done
+
+# Generate indexes:
+for file in *mapq5.bam; do samtools index $file; done
+
+# Deduplicate on UMI:
+for file in *mapq5.bam; do
+  echo $file &&
+  umi_tools dedup --stdin=${file} --stdout=${file/.bam/_dedup.bam};
+done
+
+# Count deduplicated reads:
+for file in *dedup.bam; do 
+  echo $file $(samtools flagstat $file | sed -n '1p' | \
+    awk '{print $1}'); 
+done
+
+# Merge replicates:
+samtools merge Col0.merged_UMI_mapq_dedup.bam Col*.UMI_mapq5_dedup.bam
+
+# Count merged reads:
+for file in *merged_UMI_mapq_dedup.bam; do 
+  echo $file $(samtools flagstat $file | sed -n '1p' | \
+    awk '{print $1}'); 
+done
+
+# Make stranded Bedgraph files (only the first base of each read is considered):
+for str in "+" "-"; do
+  echo $str
+  [ "$str" = "+" ] && n="fw" || n="rev"
+  for file in *_dedup.bam; do
+    echo $file && bedtools genomecov -ibam $file -bg -5 -strand $str | sort -k 1,1 -k 2,2n > ${file/.bam/}_${n}.bg
+  done
+done
+
+# Merge forward and reverse Bedgraph files for the same sample:
+for f1 in *fw.bg; do 
+  f2=${f1/fw/rev} && 
+  outf=${f1/fw.bg/fw_rev.bedgraph.gz} && 
+  echo $f1 "+" $f2 "=" $outf && 
+  awk 'BEGIN{OFS="\t"}{print $1,$2,$3,"-"$4}' $f2 | 
+  cat $f1 - | sort -k1,1 -k2,2n | 
+  sed '1i track type=bedGraph color=0,100,200 altColor=200,100,0' | gzip > $outf; 
+done
+
+#compress the bedgraph files
+for file in *.bg; do gzip $file; done
+
+# Normalize to 1M tags:
+for file in *bedgraph.gz; do 
+  norm=$( zcat $file | sed '/^[#t]/d' | \
+    awk 'BEGIN{SUM=0}{SUM+=sqrt($4^2)*($3-$2)}\
+      END{print SUM / 1000000}' ) && 
+  echo $file $norm && zcat $file | 
+  awk -v norm=$norm 'BEGIN{OFS="\t"}{if ($0~/^[#t]/) print $0; \
+    else print $1, $2, $3, $4 / norm}' | 
+  gzip > ${file/.bedgraph.gz/_norm1M.bedgraph.gz}; 
+done
+
+Change names of chromosomes
+for file in *norm1M.bedgraph.gz; do echo $file && zcat $file | sed 's/^Chr//;s/^C/Pt/;s/^M/Mt/' > temp && mv temp $file; done
