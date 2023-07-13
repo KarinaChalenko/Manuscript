@@ -1,4 +1,4 @@
-The script that was used to analyse PE ChiP-seq data coming from The NovaSeq 6000, used for ldl1, fld4, Col-0
+The script that was used to analyze PE ChiP-seq data coming from The NovaSeq 6000, used for ldl1, fld4, Col-0 and aligned to tair10 genome
 Take all fastq.gz files from folders 
 
 # make fastq_file folder
