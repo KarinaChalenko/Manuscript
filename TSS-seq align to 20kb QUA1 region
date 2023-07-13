@@ -1,3 +1,5 @@
+# This script was used for qua1-1, fld4/qua1-1, haf2/qua1-1, ws lines to align them to tDNA region. 
+# I made a reference genome - 20kb around tDNA+QUA1 gene to see if there are any TSS coming from tDNA region
 # Count raw reads:
 for file in *fastq.gz; do 
   echo $file $(( $(zcat $file | wc -l | 
